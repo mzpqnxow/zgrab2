@@ -56,6 +56,18 @@ type scan struct {
 //TODO: Tag relevant results and exlain in comments
 // ScanResults instances are returned by the module's Scan function.
 type ScanResults struct {
+	MajorVersion  *int8  `json:"version_major,omitempty"`
+	MinorVersion  *int8  `json:"version_minor,omitempty"`
+	VersionString string `json:"version_string,omitempty"`
+	CUPSVersion   string `json:"cups_version,omitempty"`
+
+	AttributeCUPSVersion string   `json:"attr_cups_version,omitempty"`
+	AttributeIPPVersions []string `json:"attr_ipp_versions,omitempty"`
+	AttributePrinterURIs []string `json:"attr_printer_uris,omitempty"`
+	Attributes           []*Attribute `json:"attributes,omitempty"`
+
+	TLSLog *zgrab2.TLSLog `json:"tls,omitempty"`
+
 	//TODO: ?Include the request sent as well??
 	Response     *http.Response `json:"response,omitempty" zgrab:"debug"`
 	CUPSResponse *http.Response `json:"cups_response,omitempty" zgrab:"debug"`
@@ -63,18 +75,6 @@ type ScanResults struct {
 	// RedirectResponseChain is non-empty if the scanner follows a redirect.
 	// It contains all redirect responses prior to the final response.
 	RedirectResponseChain []*http.Response `json:"redirect_response_chain,omitempty"`
-
-	MajorVersion  *int8  `json:"version_major,omitempty"`
-	MinorVersion  *int8  `json:"version_minor,omitempty"`
-	VersionString string `json:"version_string,omitempty"`
-	CUPSVersion   string `json:"cups_version,omitempty"`
-
-	Attributes           []*Attribute `json:"attributes,omitempty"`
-	AttributeCUPSVersion string   `json:"attr_cups_version,omitempty"`
-	AttributeIPPVersions []string `json:"attr_ipp_versions,omitempty"`
-	AttributePrinterURIs []string `json:"attr_printer_uris,omitempty"`
-
-	TLSLog *zgrab2.TLSLog `json:"tls,omitempty"`
 }
 
 // Flags holds the command-line configuration for the ipp scan module.
