@@ -201,8 +201,13 @@ func storeBody(res *http.Response, scanner *Scanner) {
 	}
 }
 
+// Returns a buffer with (up to MaxSize KB of) the contents of a response's body.
+// The buffer returned is empty if the body is empty or the response is nil.
 func bufferFromBody(res *http.Response, scanner *Scanner) *bytes.Buffer {
 	b := new(bytes.Buffer)
+	if res == nil {
+		return b
+	}
 	maxReadLen := int64(scanner.config.MaxSize) * 1024
 	readLen := maxReadLen
 	if res.ContentLength >= 0 && res.ContentLength < maxReadLen {
