@@ -28,8 +28,11 @@ import (
 // Common flags for TLS configuration -- include this in your module's ScanFlags implementation to use the common TLS code
 // Adapted from modules/ssh.go
 type TLSFlags struct {
+<<<<<<< HEAD
 	Config *tls.Config // Config is ready to use TLS configuration
 	Heartbleed bool `long:"heartbleed" description:"Check if server is vulnerable to Heartbleed"`
+=======
+>>>>>>> 7fa7fec (Allow the server to request renegotiation; fixes "local error: no renegotiation" error)
 	RenegotiateFreely    bool `long:"renegotiate-freely" description:"Allow renegotiations when requested by server"`
 	SessionTicket        bool `long:"session-ticket" description:"Send support for TLS Session Tickets and output ticket if presented" json:"session"`
 	ExtendedMasterSecret bool `long:"extended-master-secret" description:"Offer RFC 7627 Extended Master Secret extension" json:"extended"`
