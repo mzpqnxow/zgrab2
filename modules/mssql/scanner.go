@@ -12,6 +12,8 @@
 package mssql
 
 import (
+	"strings"
+
 	log "github.com/sirupsen/logrus"
 	"github.com/zmap/zgrab2"
 )
@@ -24,12 +26,16 @@ type ScanResults struct {
 	Version string `json:"version,omitempty"`
 
 	// InstanceName is the value of the INSTANCE field returned by the server
-	// in the PRELOGIN response.
-	InstanceName string `json:"instance_name,omitempty"`
+	// in the PRELOGIN response. Using a pointer to distinguish between the
+	// server returning an empty name and no name being returned.
+	InstanceName *string `json:"instance_name,omitempty"`
 
 	// PreloginOptions are the raw key-value pairs returned by the server in
 	// response to the PRELOGIN call. Debug only.
 	PreloginOptions *PreloginOptions `json:"prelogin_options,omitempty" zgrab:"debug"`
+
+	// EncryptMode is the mode negotiated with the server.
+	EncryptMode *EncryptMode `json:"encrypt_mode,omitempty"`
 
 	// TLSLog is the shared TLS handshake/scan log.
 	TLSLog *zgrab2.TLSLog `json:"tls,omitempty"`
@@ -63,6 +69,11 @@ func (module *Module) NewScanner() zgrab2.Scanner {
 	return new(Scanner)
 }
 
+// Description returns an overview of this module.
+func (module *Module) Description() string {
+	return "Perform a handshake for MSSQL databases"
+}
+
 // Validate does nothing in this module.
 func (flags *Flags) Validate(args []string) error {
 	return nil
@@ -77,6 +88,9 @@ func (flags *Flags) Help() string {
 func (scanner *Scanner) Init(flags zgrab2.ScanFlags) error {
 	f, _ := flags.(*Flags)
 	scanner.config = f
+	if f.Verbose {
+		log.SetLevel(log.DebugLevel)
+	}
 	return nil
 }
 
@@ -95,9 +109,9 @@ func (scanner *Scanner) GetName() string {
 	return scanner.config.Name
 }
 
-// GetPort returns the configured scanner port.
-func (scanner *Scanner) GetPort() uint {
-	return scanner.config.Port
+// GetTrigger returns the Trigger defined in the Flags.
+func (scanner *Scanner) GetTrigger() string {
+	return scanner.config.Trigger
 }
 
 // Scan performs the MSSQL scan.
@@ -115,7 +129,10 @@ func (scanner *Scanner) Scan(target zgrab2.ScanTarget) (zgrab2.ScanStatus, inter
 	sql := NewConnection(conn)
 	defer sql.Close()
 	result := &ScanResults{}
-	_, err = sql.Handshake(scanner.config)
+
+	encryptMode, handshakeErr := sql.Handshake(scanner.config)
+
+	result.EncryptMode = &encryptMode
 
 	if sql.tlsConn != nil {
 		result.TLSLog = sql.tlsConn.GetLog()
@@ -127,10 +144,16 @@ func (scanner *Scanner) Scan(target zgrab2.ScanTarget) (zgrab2.ScanStatus, inter
 		if version != nil {
 			result.Version = version.String()
 		}
-		result.InstanceName = string((*sql.PreloginOptions)[PreloginInstance])
+		name, ok := (*sql.PreloginOptions)[PreloginInstance]
+		if ok {
+			temp := strings.Trim(string(name), "\x00\r\n")
+			result.InstanceName = &temp
+		} else {
+			result.InstanceName = nil
+		}
 	}
 
-	if err != nil {
+	if handshakeErr != nil {
 		if sql.PreloginOptions == nil && sql.readValidTDSPacket == false {
 			// If we received no PreloginOptions and none of the packets we've
 			// read appeared to be a valid TDS header, then the inference is
@@ -140,13 +163,13 @@ func (scanner *Scanner) Scan(target zgrab2.ScanTarget) (zgrab2.ScanStatus, inter
 			// nil.
 			result = nil
 		}
-		switch err {
+		switch handshakeErr {
 		case ErrNoServerEncryption:
-			return zgrab2.SCAN_APPLICATION_ERROR, result, err
+			return zgrab2.SCAN_APPLICATION_ERROR, result, handshakeErr
 		case ErrServerRequiresEncryption:
-			return zgrab2.SCAN_APPLICATION_ERROR, result, err
+			return zgrab2.SCAN_APPLICATION_ERROR, result, handshakeErr
 		default:
-			return zgrab2.TryGetScanStatus(err), result, err
+			return zgrab2.TryGetScanStatus(handshakeErr), result, handshakeErr
 		}
 	}
 	return zgrab2.SCAN_SUCCESS, result, nil
@@ -155,8 +178,7 @@ func (scanner *Scanner) Scan(target zgrab2.ScanTarget) (zgrab2.ScanStatus, inter
 // RegisterModule is called by modules/mssql.go's init()
 func RegisterModule() {
 	var module Module
-	_, err := zgrab2.AddCommand("mssql", "MSSQL", "Grab a mssql handshake", 1433, &module)
-	log.SetLevel(log.DebugLevel)
+	_, err := zgrab2.AddCommand("mssql", "MSSQL", module.Description(), 1433, &module)
 	if err != nil {
 		log.Fatal(err)
 	}

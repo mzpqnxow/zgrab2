@@ -24,12 +24,13 @@ package imap
 
 import (
 	"fmt"
+	"errors"
+
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/zmap/zgrab2"
-	"strings"
 )
-
 
 // ScanResults instances are returned by the module's Scan function.
 type ScanResults struct {
@@ -77,7 +78,7 @@ type Scanner struct {
 // RegisterModule registers the zgrab2 module.
 func RegisterModule() {
 	var module Module
-	_, err := zgrab2.AddCommand("imap", "imap", "Probe for IMAP", 143, &module)
+	_, err := zgrab2.AddCommand("imap", "imap", module.Description(), 143, &module)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -91,6 +92,11 @@ func (module *Module) NewFlags() interface{} {
 // NewScanner returns a new Scanner instance.
 func (module *Module) NewScanner() zgrab2.Scanner {
 	return new(Scanner)
+}
+
+// Description returns an overview of this module.
+func (module *Module) Description() string {
+	return "Fetch an IMAP banner, optionally over TLS"
 }
 
 // Validate checks that the flags are valid.
@@ -126,14 +132,14 @@ func (scanner *Scanner) GetName() string {
 	return scanner.config.Name
 }
 
+// GetTrigger returns the Trigger defined in the Flags.
+func (scanner *Scanner) GetTrigger() string {
+	return scanner.config.Trigger
+}
+
 // Protocol returns the protocol identifier of the scan.
 func (scanner *Scanner) Protocol() string {
 	return "imap"
-}
-
-// GetPort returns the port being scanned.
-func (scanner *Scanner) GetPort() uint {
-	return scanner.config.Port
 }
 
 func getIMAPError(response string) error {
@@ -141,6 +147,29 @@ func getIMAPError(response string) error {
 		return nil
 	}
 	return fmt.Errorf("error: %s", response)
+}
+
+// Check the contents of the IMAP banner and return a relevant ScanStatus
+func VerifyIMAPContents(banner string) zgrab2.ScanStatus {
+	lowerBanner := strings.ToLower(banner)
+	switch {
+	case strings.HasPrefix(banner, "* NO"),
+	     strings.HasPrefix(banner, "* BAD"):
+		return zgrab2.SCAN_APPLICATION_ERROR
+	case strings.HasPrefix(banner, "* OK"),
+	     strings.HasPrefix(banner, "* PREAUTH"),
+	     strings.HasPrefix(banner, "* BYE"),
+	     strings.HasPrefix(banner, "* OKAY"),
+	     strings.Contains(banner, "IMAP"),
+	     strings.Contains(lowerBanner, "blacklist"),
+	     strings.Contains(lowerBanner, "abuse"),
+	     strings.Contains(lowerBanner, "rbl"),
+	     strings.Contains(lowerBanner, "spamhaus"),
+	     strings.Contains(lowerBanner, "relay"):
+		return zgrab2.SCAN_SUCCESS
+	default:
+		return zgrab2.SCAN_PROTOCOL_ERROR
+	}
 }
 
 // Scan performs the IMAP scan.
@@ -175,6 +204,12 @@ func (scanner *Scanner) Scan(target zgrab2.ScanTarget) (zgrab2.ScanStatus, inter
 	if err != nil {
 		return zgrab2.TryGetScanStatus(err), nil, err
 	}
+	// Quit early if we didn't get a valid response
+	// OR save a valid scan result for later
+	sr := VerifyIMAPContents(banner)
+	if sr == zgrab2.SCAN_PROTOCOL_ERROR {
+		return sr, nil, errors.New("Invalid response for IMAP")
+	}
 	result.Banner = banner
 	if scanner.config.StartTLS {
 		ret, err := conn.SendCommand("a001 STARTTLS")
@@ -204,5 +239,5 @@ func (scanner *Scanner) Scan(target zgrab2.ScanTarget) (zgrab2.ScanStatus, inter
 		}
 		result.CLOSE = ret
 	}
-	return zgrab2.SCAN_SUCCESS, result, nil
+	return sr, result, nil
 }

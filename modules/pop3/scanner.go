@@ -27,12 +27,12 @@ package pop3
 
 import (
 	"fmt"
+	"errors"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/zmap/zgrab2"
-	"strings"
 )
-
 
 // ScanResults instances are returned by the module's Scan function.
 type ScanResults struct {
@@ -92,7 +92,7 @@ type Scanner struct {
 // RegisterModule registers the zgrab2 module.
 func RegisterModule() {
 	var module Module
-	_, err := zgrab2.AddCommand("pop3", "pop3", "Probe for pop3", 110, &module)
+	_, err := zgrab2.AddCommand("pop3", "pop3", module.Description(), 110, &module)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -106,6 +106,11 @@ func (module *Module) NewFlags() interface{} {
 // NewScanner returns a new Scanner instance.
 func (module *Module) NewScanner() zgrab2.Scanner {
 	return new(Scanner)
+}
+
+// Description returns an overview of this module.
+func (module *Module) Description() string {
+	return "Fetch POP3 banners, optionally over TLS"
 }
 
 // Validate checks that the flags are valid.
@@ -141,14 +146,14 @@ func (scanner *Scanner) GetName() string {
 	return scanner.config.Name
 }
 
+// GetTrigger returns the Trigger defined in the Flags.
+func (scanner *Scanner) GetTrigger() string {
+	return scanner.config.Trigger
+}
+
 // Protocol returns the protocol identifier of the scan.
 func (scanner *Scanner) Protocol() string {
 	return "pop3"
-}
-
-// GetPort returns the port being scanned.
-func (scanner *Scanner) GetPort() uint {
-	return scanner.config.Port
 }
 
 func getPOP3Error(response string) error {
@@ -156,6 +161,27 @@ func getPOP3Error(response string) error {
 		return nil
 	}
 	return fmt.Errorf("POP3 error: %s", response[1:])
+}
+
+// Check the contents of the POP3 header and return a relevant ScanStatus
+func VerifyPOP3Contents(banner string) zgrab2.ScanStatus {
+	lowerBanner := strings.ToLower(banner)
+	switch {
+	case strings.HasPrefix(banner, "-ERR "):
+		return zgrab2.SCAN_APPLICATION_ERROR
+	case strings.HasPrefix(banner, "+OK "),
+	     strings.Contains(banner, "POP3"),
+	     // These are rare for POP3 if they happen at all,
+	     // But it won't hurt to check just in case as a backup
+	     strings.Contains(lowerBanner, "blacklist"),
+	     strings.Contains(lowerBanner, "abuse"),
+	     strings.Contains(lowerBanner, "rbl"),
+	     strings.Contains(lowerBanner, "spamhaus"),
+	     strings.Contains(lowerBanner, "relay"):
+		return zgrab2.SCAN_SUCCESS
+	default:
+		return zgrab2.SCAN_PROTOCOL_ERROR
+	}
 }
 
 // Scan performs the POP3 scan.
@@ -191,6 +217,12 @@ func (scanner *Scanner) Scan(target zgrab2.ScanTarget) (zgrab2.ScanStatus, inter
 	banner, err := conn.ReadResponse()
 	if err != nil {
 		return zgrab2.TryGetScanStatus(err), nil, err
+	}
+	// Quit early if no valid response
+	// OR save it to return later
+	sr := VerifyPOP3Contents(banner)
+	if sr == zgrab2.SCAN_PROTOCOL_ERROR {
+		return sr, nil, errors.New("Invalid response for POP3")
 	}
 	result.Banner = banner
 	if scanner.config.SendHELP {
@@ -235,5 +267,5 @@ func (scanner *Scanner) Scan(target zgrab2.ScanTarget) (zgrab2.ScanStatus, inter
 		}
 		result.QUIT = ret
 	}
-	return zgrab2.SCAN_SUCCESS, result, nil
+	return sr, result, nil
 }

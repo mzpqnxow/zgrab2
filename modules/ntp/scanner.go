@@ -815,7 +815,7 @@ type Scanner struct {
 // RegisterModule registers the module with zgrab2
 func RegisterModule() {
 	var module Module
-	_, err := zgrab2.AddCommand("ntp", "NTP", "Scan for NTP", 123, &module)
+	_, err := zgrab2.AddCommand("ntp", "NTP", module.Description(), 123, &module)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -829,6 +829,11 @@ func (module *Module) NewFlags() interface{} {
 // NewScanner returns a new NTP scanner instance
 func (module *Module) NewScanner() zgrab2.Scanner {
 	return new(Scanner)
+}
+
+// Description returns an overview of this module.
+func (module *Module) Description() string {
+	return "Scan for NTP"
 }
 
 // Validate checks that the flags are valid
@@ -863,9 +868,9 @@ func (scanner *Scanner) GetName() string {
 	return scanner.config.Name
 }
 
-// GetPort returns the port that is being scanned
-func (scanner *Scanner) GetPort() uint {
-	return scanner.config.Port
+// GetTrigger returns the Trigger defined in the Flags.
+func (scanner *Scanner) GetTrigger() string {
+	return scanner.config.Trigger
 }
 
 // SendAndReceive is a rough version of ntpdc.c's doquery(), except it only supports a single packet response

@@ -1,16 +1,13 @@
 package zgrab2
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
-	"strings"
 	"sync"
-	"time"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/zmap/zgrab2/lib/output"
 )
 
 // Grab contains all scan responses for a single host
@@ -24,34 +21,78 @@ type Grab struct {
 type ScanTarget struct {
 	IP     net.IP
 	Domain string
+	Tag    string
+	Port   *uint
 }
 
 func (target ScanTarget) String() string {
 	if target.IP == nil && target.Domain == "" {
 		return "<empty target>"
-	} else if target.IP != nil && target.Domain != "" {
-		return target.Domain + "(" + target.IP.String() + ")"
-	} else if target.IP != nil {
-		return target.IP.String()
 	}
-	return target.Domain
+	res := ""
+	if target.IP != nil && target.Domain != "" {
+		res = target.Domain + "(" + target.IP.String() + ")"
+	} else if target.IP != nil {
+		res = target.IP.String()
+	} else {
+		res = target.Domain
+	}
+	if target.Tag != "" {
+		res += " tag:" + target.Tag
+	}
+	return res
+}
+
+// Host gets the host identifier as a string: the IP address if it is available,
+// or the domain if not.
+func (target *ScanTarget) Host() string {
+	if target.IP != nil {
+		return target.IP.String()
+	} else if target.Domain != "" {
+		return target.Domain
+	}
+	log.Fatalf("Bad target %s: no IP/Domain", target.String())
+	panic("unreachable")
 }
 
 // Open connects to the ScanTarget using the configured flags, and returns a net.Conn that uses the configured timeouts for Read/Write operations.
 func (target *ScanTarget) Open(flags *BaseFlags) (net.Conn, error) {
-	timeout := time.Second * time.Duration(flags.Timeout)
-	address := net.JoinHostPort(target.IP.String(), fmt.Sprintf("%d", flags.Port))
-	return DialTimeoutConnection("tcp", address, timeout)
+	var port uint
+	// If the port is supplied in ScanTarget, let that override the cmdline option
+	if target.Port != nil {
+		port = *target.Port
+	} else {
+		port = flags.Port
+	}
+
+	address := net.JoinHostPort(target.Host(), fmt.Sprintf("%d", port))
+	return DialTimeoutConnection("tcp", address, flags.Timeout, flags.BytesReadLimit)
+}
+
+// OpenTLS connects to the ScanTarget using the configured flags, then performs
+// the TLS handshake. On success error is nil, but the connection can be non-nil
+// even if there is an error (this allows fetching the handshake log).
+func (target *ScanTarget) OpenTLS(baseFlags *BaseFlags, tlsFlags *TLSFlags) (*TLSConnection, error) {
+	conn, err := tlsFlags.Connect(target, baseFlags)
+	if err != nil {
+		return conn, err
+	}
+	err = conn.Handshake()
+	return conn, err
 }
 
 // OpenUDP connects to the ScanTarget using the configured flags, and returns a net.Conn that uses the configured timeouts for Read/Write operations.
 // Note that the UDP "connection" does not have an associated timeout.
 func (target *ScanTarget) OpenUDP(flags *BaseFlags, udp *UDPFlags) (net.Conn, error) {
-	timeout := time.Second * time.Duration(flags.Timeout)
-	address := net.JoinHostPort(target.IP.String(), fmt.Sprintf("%d", flags.Port))
+	var port uint
+	// If the port is supplied in ScanTarget, let that override the cmdline option
+	if target.Port != nil {
+		port = *target.Port
+	} else {
+		port = flags.Port
+	}
+	address := net.JoinHostPort(target.Host(), fmt.Sprintf("%d", port))
 	var local *net.UDPAddr
-	var err error
-
 	if udp != nil && (udp.LocalAddress != "" || udp.LocalPort != 0) {
 		local = &net.UDPAddr{}
 		if udp.LocalAddress != "" && udp.LocalAddress != "*" {
@@ -69,10 +110,42 @@ func (target *ScanTarget) OpenUDP(flags *BaseFlags, udp *UDPFlags) (net.Conn, er
 	if err != nil {
 		return nil, err
 	}
-	return &TimeoutConnection{
-		Conn:    conn,
-		Timeout: timeout,
-	}, nil
+	return NewTimeoutConnection(nil, conn, flags.Timeout, 0, 0, flags.BytesReadLimit), nil
+}
+
+// BuildGrabFromInputResponse constructs a Grab object for a target, given the
+// scan responses.
+func BuildGrabFromInputResponse(t *ScanTarget, responses map[string]ScanResponse) *Grab {
+	var ipstr string
+
+	if t.IP != nil {
+		ipstr = t.IP.String()
+	}
+	return &Grab{
+		IP:     ipstr,
+		Domain: t.Domain,
+		Data:   responses,
+	}
+}
+
+// EncodeGrab serializes a Grab to JSON, handling the debug fields if necessary.
+func EncodeGrab(raw *Grab, includeDebug bool) ([]byte, error) {
+	var outputData interface{}
+	if includeDebug {
+		outputData = raw
+	} else {
+		// If the caller doesn't explicitly request debug data, strip it out.
+		// TODO: Migrate this to the ZMap fork of sheriff, once it's more
+		// stable.
+		processor := output.Processor{Verbose: false}
+		stripped, err := processor.Process(raw)
+		if err != nil {
+			log.Debugf("Error processing results: %v", err)
+			stripped = raw
+		}
+		outputData = stripped
+	}
+	return json.Marshal(outputData)
 }
 
 // grabTarget calls handler for each action
@@ -80,31 +153,30 @@ func grabTarget(input ScanTarget, m *Monitor) []byte {
 	moduleResult := make(map[string]ScanResponse)
 
 	for _, scannerName := range orderedScanners {
+		scanner := scanners[scannerName]
+		trigger := (*scanner).GetTrigger()
+		if input.Tag != trigger {
+			continue
+		}
 		defer func(name string) {
 			if e := recover(); e != nil {
-				log.Errorf("Panic on scanner %s when scanning target %s", scannerName, input.String())
+				log.Errorf("Panic on scanner %s when scanning target %s: %#v", scannerName, input.String(), e)
 				// Bubble out original error (with original stack) in lieu of explicitly logging the stack / error
 				panic(e)
 			}
 		}(scannerName)
-		scanner := scanners[scannerName]
 		name, res := RunScanner(*scanner, m, input)
 		moduleResult[name] = res
 		if res.Error != nil && !config.Multiple.ContinueOnError {
 			break
 		}
+		if res.Status == SCAN_SUCCESS && config.Multiple.BreakOnSuccess {
+			break
+		}
 	}
 
-	var ipstr string
-	if input.IP == nil {
-		ipstr = ""
-	} else {
-		s := input.IP.String()
-		ipstr = s
-	}
-
-	a := Grab{IP: ipstr, Domain: input.Domain, Data: moduleResult}
-	result, err := json.Marshal(a)
+	raw := BuildGrabFromInputResponse(&input, moduleResult)
+	result, err := EncodeGrab(raw, includeDebugOutput())
 	if err != nil {
 		log.Fatalf("unable to marshal data: %s", err)
 	}
@@ -112,7 +184,7 @@ func grabTarget(input ScanTarget, m *Monitor) []byte {
 	return result
 }
 
-// Process sets up an output encoder, input reader, and starts grab workers
+// Process sets up an output encoder, input reader, and starts grab workers.
 func Process(mon *Monitor) {
 	workers := config.Senders
 	processQueue := make(chan ScanTarget, workers*4)
@@ -126,16 +198,9 @@ func Process(mon *Monitor) {
 
 	// Start the output encoder
 	go func() {
-		out := bufio.NewWriter(config.outputFile)
 		defer outputDone.Done()
-		defer out.Flush()
-		for result := range outputQueue {
-			if _, err := out.Write(result); err != nil {
-				log.Fatal(err)
-			}
-			if err := out.WriteByte('\n'); err != nil {
-				log.Fatal(err)
-			}
+		if err := config.outputResults(outputQueue); err != nil {
+			log.Fatal(err)
 		}
 	}()
 	//Start all the workers
@@ -155,35 +220,9 @@ func Process(mon *Monitor) {
 		}(i)
 	}
 
-	// Read the input, send to workers
-	input := bufio.NewReader(config.inputFile)
-	for {
-		obj, err := input.ReadBytes('\n')
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			log.Error(err)
-		}
-		st := strings.TrimSpace(string(obj))
-		ipnet, domain, err := ParseTarget(st)
-		if err != nil {
-			log.Error(err)
-			continue
-		}
-		var ip net.IP
-		if ipnet != nil {
-			if ipnet.Mask != nil {
-				for ip = ipnet.IP.Mask(ipnet.Mask); ipnet.Contains(ip); incrementIP(ip) {
-					processQueue <- ScanTarget{IP: duplicateIP(ip), Domain: domain}
-				}
-				continue
-			} else {
-				ip = ipnet.IP
-			}
-		}
-		processQueue <- ScanTarget{IP: ip, Domain: domain}
+	if err := config.inputTargets(processQueue); err != nil {
+		log.Fatal(err)
 	}
-
 	close(processQueue)
 	workerDone.Wait()
 	close(outputQueue)

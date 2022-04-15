@@ -32,7 +32,7 @@ type Scanner struct {
 // RegisterModule registers the zgrab2 module.
 func RegisterModule() {
 	var module Module
-	_, err := zgrab2.AddCommand("bacnet", "bacnet", "Probe for bacnet", 0xBAC0, &module)
+	_, err := zgrab2.AddCommand("bacnet", "bacnet", module.Description(), 0xBAC0, &module)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -46,6 +46,11 @@ func (module *Module) NewFlags() interface{} {
 // NewScanner returns a new Scanner instance.
 func (module *Module) NewScanner() zgrab2.Scanner {
 	return new(Scanner)
+}
+
+// Description returns text uses in the help for this module.
+func (module *Module) Description() string {
+	return "Probe for devices that speak Bacnet, commonly used for HVAC control."
 }
 
 // Validate checks that the flags are valid.
@@ -77,14 +82,14 @@ func (scanner *Scanner) GetName() string {
 	return scanner.config.Name
 }
 
+// GetTrigger returns the Trigger defined in the Flags.
+func (scanner *Scanner) GetTrigger() string {
+	return scanner.config.Trigger
+}
+
 // Protocol returns the protocol identifier of the scan.
 func (scanner *Scanner) Protocol() string {
 	return "bacnet"
-}
-
-// GetPort returns the port being scanned.
-func (scanner *Scanner) GetPort() uint {
-	return scanner.config.Port
 }
 
 // Scan probes for a BACNet service.

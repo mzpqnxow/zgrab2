@@ -32,7 +32,7 @@ type Scanner struct {
 // RegisterModule registers the zgrab2 module.
 func RegisterModule() {
 	var module Module
-	_, err := zgrab2.AddCommand("smb", "smb", "Probe for smb", 445, &module)
+	_, err := zgrab2.AddCommand("smb", "smb", module.Description(), 445, &module)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -46,6 +46,11 @@ func (module *Module) NewFlags() interface{} {
 // NewScanner returns a new Scanner instance.
 func (module *Module) NewScanner() zgrab2.Scanner {
 	return new(Scanner)
+}
+
+// Description returns an overview of this module.
+func (module *Module) Description() string {
+	return "Probe for SMB servers (Windows filesharing / SAMBA)"
 }
 
 // Validate checks that the flags are valid.
@@ -77,14 +82,14 @@ func (scanner *Scanner) GetName() string {
 	return scanner.config.Name
 }
 
+// GetTrigger returns the Trigger defined in the Flags.
+func (scanner *Scanner) GetTrigger() string {
+	return scanner.config.Trigger
+}
+
 // Protocol returns the protocol identifier of the scan.
 func (scanner *Scanner) Protocol() string {
 	return "smb"
-}
-
-// GetPort returns the port being scanned.
-func (scanner *Scanner) GetPort() uint {
-	return scanner.config.Port
 }
 
 // Scan performs the following:
@@ -106,13 +111,24 @@ func (scanner *Scanner) Scan(target zgrab2.ScanTarget) (zgrab2.ScanStatus, inter
 	}
 	defer conn.Close()
 	var result *smb.SMBLog
-	if scanner.config.SetupSession {
-		result, err = smb.GetSMBLog(conn, scanner.config.Verbose)
-	} else {
-		result, err = smb.GetSMBBanner(conn, scanner.config.Verbose)
-	}
+	setupSession := scanner.config.SetupSession
+	verbose := scanner.config.Verbose
+	result, err = smb.GetSMBLog(conn, setupSession, false, verbose)
 	if err != nil {
-		return zgrab2.TryGetScanStatus(err), result, err
+		if result == nil {
+			conn.Close()
+			conn, err = target.Open(&scanner.config.BaseFlags)
+			if err != nil {
+				return zgrab2.TryGetScanStatus(err), nil, err
+			}
+			defer conn.Close()
+			result, err = smb.GetSMBLog(conn, setupSession, true, verbose)
+			if err != nil {
+				return zgrab2.TryGetScanStatus(err), result, err
+			}
+		} else {
+			return zgrab2.TryGetScanStatus(err), result, err
+		}
 	}
 	return zgrab2.SCAN_SUCCESS, result, nil
 }

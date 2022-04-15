@@ -15,12 +15,12 @@ versions="openntp 4.2.6"
 function test_openntp() {
     echo "ntp/test: Tests runner for ntp_openntp"
 
-    CONTAINER_NAME="zgrab_ntp_openntp" $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3 > "$OUTPUT_ROOT/openntp.json"
+    CONTAINER_NAME="zgrab_ntp_openntp" $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3s > "$OUTPUT_ROOT/openntp.json"
     
     # Don't drop this in the standard output root, since it will not have status = success
-    CONTAINER_NAME="zgrab_ntp_openntp" $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3 --monlist > out.tmp
-    time=$($ZGRAB_ROOT/jp -u data.ntp.result.time < out.tmp)
-    version=$($ZGRAB_ROOT/jp -u data.ntp.result.version < out.tmp)
+    CONTAINER_NAME="zgrab_ntp_openntp" $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3s --monlist > out.tmp
+    time=$(jp -u data.ntp.result.time < out.tmp)
+    version=$(jp -u data.ntp.result.version < out.tmp)
     rm -f out.tmp
     if [ $time = "null" ]; then
         echo "ntp/test: Failed to get partial result from monlist on openntp (time = null)"
@@ -35,9 +35,9 @@ function test_openntp() {
 function test_bad_req() {
     code=$1
     expected_error=$2
-    CONTAINER_NAME="zgrab_ntp_4.2.6" $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3 --monlist --request-code $code --skip-get-time > out.tmp
-    status=$($ZGRAB_ROOT/jp -u data.ntp.status < out.tmp)
-    error=$($ZGRAB_ROOT/jp -u data.ntp.error < out.tmp)
+    CONTAINER_NAME="zgrab_ntp_4.2.6" $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3s --monlist --request-code $code --skip-get-time > out.tmp
+    status=$(jp -u data.ntp.status < out.tmp)
+    error=$(jp -u data.ntp.error < out.tmp)
     rm -f out.tmp
     if ! [ $status = "application-error" ]; then
         echo "ntp/test: Got error '$error', expected '$expected_error' on $code"
@@ -54,13 +54,13 @@ function test_4_2_6() {
 
     echo "ntp/test: Tests runner for ntp_4.2.6"
 
-    CONTAINER_NAME=$CONTAINER_NAME $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3 > "$OUTPUT_ROOT/4.2.6_normal.json"
-    CONTAINER_NAME=$CONTAINER_NAME $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3 --monlist > "$OUTPUT_ROOT/4.2.6_monlist.json"
+    CONTAINER_NAME=$CONTAINER_NAME $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3s > "$OUTPUT_ROOT/4.2.6_normal.json"
+    CONTAINER_NAME=$CONTAINER_NAME $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3s --monlist > "$OUTPUT_ROOT/4.2.6_monlist.json"
 
     request_codes="REQ_MON_GETLIST_1 REQ_MON_GETLIST"
     for code in $request_codes; do
-        CONTAINER_NAME=$CONTAINER_NAME $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3 --monlist --request-code $code > "$OUTPUT_ROOT/4.2.6_$code.json"
-        CONTAINER_NAME=$CONTAINER_NAME $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3 --monlist --request-code $code --skip-get-time > "$OUTPUT_ROOT/4.2.6_${code}_solo.json"
+        CONTAINER_NAME=$CONTAINER_NAME $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3s --monlist --request-code $code > "$OUTPUT_ROOT/4.2.6_$code.json"
+        CONTAINER_NAME=$CONTAINER_NAME $ZGRAB_ROOT/docker-runner/docker-run.sh ntp --timeout 3s --monlist --request-code $code --skip-get-time > "$OUTPUT_ROOT/4.2.6_${code}_solo.json"
     done
 
     # Check that when the server returns with a valid error code that we return status = application-error and we forward the INFO_ERR code from the server

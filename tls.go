@@ -4,13 +4,16 @@ import (
 	"encoding/base64"
 	"encoding/csv"
 	"fmt"
+	"io/ioutil"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/zmap/zcrypto/tls"
+	"github.com/zmap/zcrypto/x509"
 )
 
 // Shared code for TLS scans.
@@ -25,6 +28,8 @@ import (
 // Common flags for TLS configuration -- include this in your module's ScanFlags implementation to use the common TLS code
 // Adapted from modules/ssh.go
 type TLSFlags struct {
+	Config *tls.Config // Config is ready to use TLS configuration
+
 	Heartbleed bool `long:"heartbleed" description:"Check if server is vulnerable to Heartbleed"`
 
 	SessionTicket        bool `long:"session-ticket" description:"Send support for TLS Session Tickets and output ticket if presented" json:"session"`
@@ -80,10 +85,20 @@ func getCSV(arg string) []string {
 }
 
 func (t *TLSFlags) GetTLSConfig() (*tls.Config, error) {
+	return t.GetTLSConfigForTarget(nil)
+}
+
+func (t *TLSFlags) GetTLSConfigForTarget(target *ScanTarget) (*tls.Config, error) {
 	var err error
+
+	// Config already exists
+	if t.Config != nil {
+		return t.Config, nil
+	}
 
 	// TODO: Find standard names
 	cipherMap := map[string][]uint16{
+		"portable":        tls.PortableCiphers,
 		"dhe-only":        tls.DHECiphers,
 		"ecdhe-only":      tls.ECDHECiphers,
 		"exports-dh-only": tls.DHEExportCiphers,
@@ -120,8 +135,19 @@ func (t *TLSFlags) GetTLSConfig() (*tls.Config, error) {
 		log.Fatalf("--certificate-map not implemented")
 	}
 	if t.RootCAs != "" {
-		// TODO FIXME: Implement
-		log.Fatalf("--root-cas not implemented")
+		var fd *os.File
+		if fd, err = os.Open(t.RootCAs); err != nil {
+			log.Fatal(err)
+		}
+		caBytes, readErr := ioutil.ReadAll(fd)
+		if readErr != nil {
+			log.Fatal(err)
+		}
+		ret.RootCAs = x509.NewCertPool()
+		ok := ret.RootCAs.AppendCertsFromPEM(caBytes)
+		if !ok {
+			log.Fatalf("Could not read certificates from PEM file. Invalid PEM?")
+		}
 	}
 	if t.NextProtos != "" {
 		// TODO: Different format?
@@ -129,7 +155,14 @@ func (t *TLSFlags) GetTLSConfig() (*tls.Config, error) {
 	}
 	if t.ServerName != "" {
 		// TODO: In the original zgrab, this was only set of NoSNI was not set (though in that case, it set it to the scanning host name)
+		// Here, if an explicit ServerName is given, set that, ignoring NoSNI.
 		ret.ServerName = t.ServerName
+	} else {
+		// If no explicit ServerName is given, and SNI is not disabled, use the
+		// target's domain name (if available).
+		if !t.NoSNI && target != nil {
+			ret.ServerName = target.Domain
+		}
 	}
 	if t.VerifyServerCertificate {
 		ret.InsecureSkipVerify = false
@@ -179,7 +212,7 @@ func (t *TLSFlags) GetTLSConfig() (*tls.Config, error) {
 		log.Fatalf("--signature-algorithms not implemented")
 	}
 
-	if t.HeartbeatEnabled {
+	if t.HeartbeatEnabled || t.Heartbleed {
 		ret.HeartbeatEnabled = true
 	} else {
 		ret.HeartbeatEnabled = false
@@ -276,15 +309,39 @@ func (z *TLSConnection) Handshake() error {
 	}
 }
 
+// Close the underlying connection.
+func (conn *TLSConnection) Close() error {
+	return conn.Conn.Close()
+}
+
+// Connect opens the TCP connection to the target using the given configuration,
+// and then returns the configured wrapped TLS connection. The caller must still
+// call Handshake().
+func (t *TLSFlags) Connect(target *ScanTarget, flags *BaseFlags) (*TLSConnection, error) {
+	tcpConn, err := target.Open(flags)
+	if err != nil {
+		return nil, err
+	}
+	return t.GetTLSConnectionForTarget(tcpConn, target)
+}
+
 func (t *TLSFlags) GetTLSConnection(conn net.Conn) (*TLSConnection, error) {
-	cfg, err := t.GetTLSConfig()
+	return t.GetTLSConnectionForTarget(conn, nil)
+}
+
+func (t *TLSFlags) GetTLSConnectionForTarget(conn net.Conn, target *ScanTarget) (*TLSConnection, error) {
+	cfg, err := t.GetTLSConfigForTarget(target)
 	if err != nil {
 		return nil, fmt.Errorf("Error getting TLSConfig for options: %s", err)
 	}
+	return t.GetWrappedConnection(conn, cfg), nil
+}
+
+func (t *TLSFlags) GetWrappedConnection(conn net.Conn, cfg *tls.Config) *TLSConnection {
 	tlsClient := tls.Client(conn, cfg)
 	wrappedClient := TLSConnection{
 		Conn:  *tlsClient,
 		flags: t,
 	}
-	return &wrappedClient, nil
+	return &wrappedClient
 }
