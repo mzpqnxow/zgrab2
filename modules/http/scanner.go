@@ -54,6 +54,10 @@ type Flags struct {
 	MaxSize         int    `long:"max-size" default:"256" description:"Max kilobytes to read in response to an HTTP request"`
 	MaxRedirects    int    `long:"max-redirects" default:"0" description:"Max number of redirects to follow"`
 
+	// Some fine-grained control of HTTP headers, overriding the golang http module default
+	NoAcceptHeader  bool   `long:"no-accept-header" description:"Do not include an HTTP Accept header"`
+	DisableCompression bool  `long:"disable-compression" description:"Do not set Accept-Encoding to gzip"`
+
 	// FollowLocalhostRedirects overrides the default behavior to return
 	// ErrRedirLocalhost whenever a redirect points to localhost.
 	FollowLocalhostRedirects bool `long:"follow-localhost-redirects" description:"Follow HTTP redirects to localhost"`
@@ -71,6 +75,8 @@ type Flags struct {
 	CustomHeadersDelimiter string `long:"custom-headers-delimiter" description:"Delimiter for customer header name/value CSVs"`
 	// Set HTTP Request body
 	RequestBody string `long:"request-body" description:"HTTP request body to send to server"`
+	Chunked         bool   `long:"chunked" description:"Use chunked encoding if a POST body is set"`
+	ContentType     string `long:"content-type" default:"" description:"Set the Content-Type header explicitly; defaults to application/x-www-form-urlencoded for POST"`
 
 	OverrideSH bool `long:"override-sig-hash" description:"Override the default SignatureAndHashes TLS option with more expansive default"`
 
@@ -451,7 +457,7 @@ func (scanner *Scanner) newHTTPScan(t *zgrab2.ScanTarget, useHTTPS bool) *scan {
 		transport: &http.Transport{
 			Proxy:               nil, // TODO: implement proxying
 			DisableKeepAlives:   false,
-			DisableCompression:  false,
+			DisableCompression:  scanner.config.DisableCompression,
 			MaxIdleConnsPerHost: scanner.config.MaxRedirects,
 		},
 		client:         http.MakeNewClient(),
@@ -489,6 +495,16 @@ func (scan *scan) Grab() *zgrab2.ScanError {
 	)
 	if len(scan.scanner.config.RequestBody) > 0 {
 		request, err = http.NewRequest(scan.scanner.config.Method, scan.url, strings.NewReader(scan.scanner.config.RequestBody))
+		if scan.scanner.config.Chunked {
+			request.TransferEncoding = []string{"chunked"}
+		} else {
+			request.TransferEncoding = []string{"identity"}
+		}
+
+		if scan.scanner.config.ContentType == "" {
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+
 	} else {
 		request, err = http.NewRequest(scan.scanner.config.Method, scan.url, nil)
 	}
@@ -499,6 +515,7 @@ func (scan *scan) Grab() *zgrab2.ScanError {
 	// By default, the following headers are *always* set:
 	// Host, User-Agent, Accept, Accept-Encoding
 	if scan.scanner.customHeaders != nil {
+
 		request.Header.Set("Accept", "*/*")
 		for k, v := range scan.scanner.customHeaders {
 			request.Header.Set(k, v)
@@ -508,6 +525,17 @@ func (scan *scan) Grab() *zgrab2.ScanError {
 		// to set the Accept header
 		request.Header.Set("Accept", "*/*")
 	}
+
+	// This looks clumsy (deleting after setting above) but if I recall, golang http
+	// sets this no matter what.. maybe this needs to be reviewed again ..
+	if scan.scanner.config.NoAcceptHeader {
+		request.Header.Del("Accept")
+	}
+
+	if scan.scanner.config.ContentType != "" {
+		request.Header.Set("Content-Type", scan.scanner.config.ContentType)
+	} 
+
 
 	resp, err := scan.client.Do(request)
 	if resp != nil && resp.Body != nil {
