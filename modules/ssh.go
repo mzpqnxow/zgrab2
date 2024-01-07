@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/net/proxy"
 	log "github.com/sirupsen/logrus"
 	"github.com/zmap/zgrab2"
 	"github.com/zmap/zgrab2/lib/ssh"
@@ -22,6 +23,7 @@ type SSHFlags struct {
 	GexPreferredBits  uint   `long:"gex-preferred-bits" description:"The preferred number of bits for the DH GEX prime." default:"2048"`
 	HelloOnly         bool   `long:"hello-only" description:"Limit scan to the initial hello message"`
 	Verbose           bool   `long:"verbose" description:"Output additional information, including SSH client properties from the SSH handshake."`
+	Socks5            string `long:"socks5" description:"SOCKS5 proxy for SSH connection" default:""`
 }
 
 type SSHModule struct {
@@ -82,6 +84,28 @@ func (s *SSHScanner) GetTrigger() string {
 	return s.config.Trigger
 }
 
+
+// Shamelessly stolen from https://stackoverflow.com/users/326722/danmux
+// See: https://stackoverflow.com/questions/36102036/how-to-connect-remote-ssh-server-with-socks-proxy
+func proxiedSSHClient(proxyAddress, sshServerAddress string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
+    dialer, err := proxy.SOCKS5("tcp", proxyAddress, nil, proxy.Direct)
+    if err != nil {
+        return nil, err
+    }
+
+    conn, err := dialer.Dial("tcp", sshServerAddress)
+    if err != nil {
+        return nil, err
+    }
+
+    c, chans, reqs, err := ssh.NewClientConn(conn, sshServerAddress, sshConfig)
+    if err != nil {
+        return nil, err
+    }
+
+    return ssh.NewClient(c, chans, reqs), nil
+}
+
 func (s *SSHScanner) Scan(t zgrab2.ScanTarget) (zgrab2.ScanStatus, interface{}, error) {
 	data := new(ssh.HandshakeLog)
 
@@ -118,7 +142,16 @@ func (s *SSHScanner) Scan(t zgrab2.ScanTarget) (zgrab2.ScanStatus, interface{}, 
 		data.Banner = strings.TrimSpace(banner)
 		return nil
 	}
-	_, err := ssh.Dial("tcp", rhost, sshConfig)
+
+
+	var err error
+	if s.config.Socks5 != "" { 
+		_, err = proxiedSSHClient(s.config.Socks5, rhost, sshConfig)
+	} else {
+		_, err = ssh.Dial("tcp", rhost, sshConfig)
+
+	}
+
 	// TODO FIXME: Distinguish error types
 	status := zgrab2.TryGetScanStatus(err)
 	return status, data, err
